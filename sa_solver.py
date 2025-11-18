@@ -36,7 +36,7 @@ class GraphColoringSA:
         """
         return {vertex: random.choice(self.colors) for vertex in self.vertices}
     
-    def calc_temp(self, iteration: int, initial_temp: float) -> float:
+    def calc_temp(self, iteration: int, initial_temp: float, cooling_rate: float = 0.95) -> float:
         """
         Calculate current temperature based on iteration.
         Uses exponential cooling schedule.
@@ -44,12 +44,12 @@ class GraphColoringSA:
         Args:
             iteration: Current iteration number
             initial_temp: Initial temperature
+            cooling_rate: Cooling rate (default: 0.95). Lower values cool faster.
         
         Returns:
             Current temperature
         """
         # Exponential cooling: T = T0 * (cooling_rate ^ iteration)
-        cooling_rate = 0.95  # Can be made configurable
         return initial_temp * (cooling_rate ** iteration)
     
     def random_successor(self, current_coloring: Dict[int, int]) -> Dict[int, int]:
@@ -88,8 +88,87 @@ class GraphColoringSA:
         # Each conflict is counted twice (once per vertex), so divide by 2
         return conflicts // 2
     
+    def _sim_anneal_core(self, m: int, iter_max: int, T: float, min_temp: float = 2.0, cooling_rate: float = 0.95):
+        """
+        Core Simulated Annealing algorithm (internal method without yield).
+        Returns: (best_coloring, temperature_history, conflict_history, stop_reason)
+        """
+        # Initialize
+        xcurr = self.initial_config(m)
+        xbest = xcurr.copy()
+        
+        # Track progress
+        temperature_history = []
+        conflict_history = []
+        stop_reason = "max_iterations"  # Default stop reason
+        
+        try:
+            for i in range(1, iter_max + 1):
+                # Calculate current temperature
+                Tc = self.calc_temp(i, T, cooling_rate)
+                temperature_history.append(Tc)
+                
+                # Check if temperature reached minimum threshold
+                if Tc <= min_temp:
+                    stop_reason = "temperature_threshold"
+                    # Process one more iteration with current state before stopping
+                    conflicts_curr = self.count_conflicts(xcurr)
+                    conflict_history.append(conflicts_curr)
+                    break
+                
+                # Generate random successor
+                xnext = self.random_successor(xcurr)
+                
+                # Calculate energy difference
+                # Energy = number of conflicts (lower is better)
+                # ΔE = conflicts_current - conflicts_next (positive means improvement)
+                conflicts_curr = self.count_conflicts(xcurr)
+                conflicts_next = self.count_conflicts(xnext)
+                delta_E = conflicts_curr - conflicts_next
+                
+                # Track conflicts
+                conflict_history.append(conflicts_curr)
+                
+                # Acceptance criteria
+                if delta_E > 0:  # Improvement (fewer conflicts)
+                    xcurr = xnext
+                    if self.count_conflicts(xbest) > self.count_conflicts(xcurr):
+                        xbest = xcurr.copy()
+                        # Check if we found a perfect solution (0 conflicts)
+                        if self.count_conflicts(xbest) == 0:
+                            stop_reason = "solution_found"
+                            conflict_history.append(conflicts_next)
+                            break
+                elif delta_E < 0:  # Worse solution
+                    # Accept with probability e^(-ΔE/T)
+                    # Since ΔE is negative, -ΔE/T is positive
+                    prob = math.exp(delta_E / Tc) if Tc > 0 else 0
+                    if random.random() < prob:
+                        xcurr = xnext
+                else:  # delta_E == 0, same quality
+                    # Can accept to allow exploration
+                    if random.random() < 0.5:
+                        xcurr = xnext
+                
+                # Check if current solution is perfect (0 conflicts)
+                if self.count_conflicts(xcurr) == 0:
+                    xbest = xcurr.copy()
+                    stop_reason = "solution_found"
+                    break
+        except Exception as e:
+            # If any error occurs, return current best solution
+            import traceback
+            print(f"Error in _sim_anneal_core: {e}")
+            print(traceback.format_exc())
+            stop_reason = "error"
+        
+        # Store stop reason
+        self._stop_reason = stop_reason
+        # Always return 4 values
+        return xbest, temperature_history, conflict_history, stop_reason
+    
     def sim_anneal(self, m: int, iter_max: int, T: float, 
-                   yield_progress: bool = False, min_temp: float = 2.0):
+                   yield_progress: bool = False, min_temp: float = 2.0, cooling_rate: float = 0.95):
         """
         Simulated Annealing algorithm based on the provided pseudocode.
         Can yield intermediate states for visualization.
@@ -101,6 +180,7 @@ class GraphColoringSA:
             T: Initial temperature
             yield_progress: If True, yields (current_coloring, iteration, temperature, conflicts) at each step
             min_temp: Minimum temperature threshold (default: 2.0). Algorithm stops when temp <= min_temp
+            cooling_rate: Cooling rate (default: 0.95). Lower values cool faster.
         
         Yields (if yield_progress=True):
             Tuple of (current_coloring, iteration, temperature, conflicts)
@@ -109,6 +189,10 @@ class GraphColoringSA:
             If yield_progress=False: Tuple of (best_coloring, temperature_history, conflict_history, stop_reason)
             If yield_progress=True: Generator that yields progress, final result stored in instance
         """
+        if not yield_progress:
+            # Use core method that doesn't yield
+            return self._sim_anneal_core(m, iter_max, T, min_temp, cooling_rate)
+        
         # Initialize
         xcurr = self.initial_config(m)
         xbest = xcurr.copy()
@@ -120,7 +204,7 @@ class GraphColoringSA:
         
         for i in range(1, iter_max + 1):
             # Calculate current temperature
-            Tc = self.calc_temp(i, T)
+            Tc = self.calc_temp(i, T, cooling_rate)
             temperature_history.append(Tc)
             
             # Check if temperature reached minimum threshold
@@ -130,9 +214,7 @@ class GraphColoringSA:
                 conflicts_curr = self.count_conflicts(xcurr)
                 conflict_history.append(conflicts_curr)
                 
-                if yield_progress:
-                    yield (xcurr.copy(), i, Tc, conflicts_curr)
-                
+                yield (xcurr.copy(), i, Tc, conflicts_curr)
                 break
             
             # Generate random successor
@@ -148,9 +230,8 @@ class GraphColoringSA:
             # Track conflicts
             conflict_history.append(conflicts_curr)
             
-            # Yield progress if requested
-            if yield_progress:
-                yield (xcurr.copy(), i, Tc, conflicts_curr)
+            # Yield progress
+            yield (xcurr.copy(), i, Tc, conflicts_curr)
             
             # Acceptance criteria
             if delta_E > 0:  # Improvement (fewer conflicts)
@@ -161,8 +242,7 @@ class GraphColoringSA:
                     if self.count_conflicts(xbest) == 0:
                         stop_reason = "solution_found"
                         conflict_history.append(conflicts_next)
-                        if yield_progress:
-                            yield (xbest.copy(), i, Tc, 0)
+                        yield (xbest.copy(), i, Tc, 0)
                         break
             elif delta_E < 0:  # Worse solution
                 # Accept with probability e^(-ΔE/T)
@@ -179,26 +259,18 @@ class GraphColoringSA:
             if self.count_conflicts(xcurr) == 0:
                 xbest = xcurr.copy()
                 stop_reason = "solution_found"
-                if yield_progress:
-                    yield (xbest.copy(), i, Tc, 0)
+                yield (xbest.copy(), i, Tc, 0)
                 break
         
         # Store stop reason
         self._stop_reason = stop_reason
-        
-        # Return final result
-        if not yield_progress:
-            return xbest, temperature_history, conflict_history, stop_reason
-        else:
-            # Store final result as attribute for access after generator completes
-            self._final_result = (xbest, temperature_history, conflict_history, stop_reason)
+        # Store final result as attribute for access after generator completes
+        self._final_result = (xbest, temperature_history, conflict_history, stop_reason)
     
-    def sim_anneal_simple(self, m: int, iter_max: int, T: float, min_temp: float = 2.0) -> Tuple[Dict[int, int], List[float], List[int], str]:
+    def sim_anneal_simple(self, m: int, iter_max: int, T: float, min_temp: float = 2.0, cooling_rate: float = 0.95) -> Tuple[Dict[int, int], List[float], List[int], str]:
         """
         Simple version that doesn't yield (for backward compatibility).
         """
-        result = None
-        for result in self.sim_anneal(m, iter_max, T, yield_progress=False, min_temp=min_temp):
-            pass
-        return result
+        # Use the core method directly (no generator)
+        return self._sim_anneal_core(m, iter_max, T, min_temp, cooling_rate)
 

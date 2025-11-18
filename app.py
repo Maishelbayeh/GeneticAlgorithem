@@ -14,7 +14,7 @@ from graph_utils import create_graph_from_edges, generate_random_graph, visualiz
 st.set_page_config(page_title="Graph Coloring: SA vs CSP Comparison", layout="wide")
 
 
-def _run_sa(graph, num_colors, initial_temp, min_temp, max_iterations, 
+def _run_sa(graph, num_colors, initial_temp, min_temp, max_iterations, cooling_rate,
            show_animation, animation_speed, live_viz_placeholder, status_placeholder):
     """Run Simulated Annealing algorithm."""
     solver = GraphColoringSA(graph, num_colors)
@@ -38,7 +38,7 @@ def _run_sa(graph, num_colors, initial_temp, min_temp, max_iterations,
         progress_bar = st.progress(0)
         status_text = st.empty()
         
-        generator = solver.sim_anneal(len(graph), max_iterations, initial_temp, yield_progress=True, min_temp=min_temp)
+        generator = solver.sim_anneal(len(graph), max_iterations, initial_temp, yield_progress=True, min_temp=min_temp, cooling_rate=cooling_rate)
         
         try:
             iteration = 0
@@ -97,10 +97,15 @@ def _run_sa(graph, num_colors, initial_temp, min_temp, max_iterations,
             st.code(traceback.format_exc())
             # Fallback to simple version
             best_coloring, temp_history, conflict_history, stop_reason = solver.sim_anneal_simple(
-                len(graph), max_iterations, initial_temp, min_temp
+                len(graph), max_iterations, initial_temp, min_temp, cooling_rate
             )
         
         progress_bar.progress(1.0)
+        
+        # Show final best solution in visualization
+        if best_coloring:
+            fig = visualize_graph(graph, best_coloring, solver.color_names)
+            live_viz_placeholder.pyplot(fig)
         
         # Show completion message with stop reason
         elapsed_time = time.time() - start_time
@@ -114,7 +119,7 @@ def _run_sa(graph, num_colors, initial_temp, min_temp, max_iterations,
         # Run without animation (faster)
         with st.spinner("Running Simulated Annealing..."):
             best_coloring, temp_history, conflict_history, stop_reason = solver.sim_anneal_simple(
-                len(graph), max_iterations, initial_temp, min_temp
+                len(graph), max_iterations, initial_temp, min_temp, cooling_rate
             )
             elapsed_time = time.time() - start_time
             if stop_reason == "temperature_threshold":
@@ -198,6 +203,21 @@ def _run_csp(graph, num_colors, max_assignments, show_animation, live_viz_placeh
                 solution, assignments_count, backtracks_count, stop_reason = solver.solve(yield_progress=False, max_assignments=max_assignments)
             
             progress_bar.progress(1.0)
+            
+            # Show final solution in visualization
+            # Ensure solution is a dict, not a tuple
+            if solution:
+                if isinstance(solution, tuple):
+                    # If solution is a tuple, extract the dict from it
+                    if len(solution) >= 1 and isinstance(solution[0], dict):
+                        solution = solution[0]
+                    else:
+                        # Use last_assignment if available
+                        solution = last_assignment if last_assignment else None
+                if solution and isinstance(solution, dict):
+                    fig = visualize_graph(graph, solution, solver.color_names)
+                    live_viz_placeholder.pyplot(fig)
+            
             elapsed_time = time.time() - start_time
             
             # Show completion message with stop reason
@@ -230,7 +250,17 @@ def _run_csp(graph, num_colors, max_assignments, show_animation, live_viz_placeh
                 st.warning(f"⚠️ CSP completed! No solution found - Time: {elapsed_time:.2f}s")
     
     # Store results in session state
-    st.session_state['best_coloring'] = solution
+    # Ensure solution is a dict, not a tuple
+    final_solution = solution
+    if solution and isinstance(solution, tuple):
+        if len(solution) >= 1 and isinstance(solution[0], dict):
+            final_solution = solution[0]
+        else:
+            final_solution = None
+    elif solution and not isinstance(solution, dict):
+        final_solution = None
+    
+    st.session_state['best_coloring'] = final_solution
     st.session_state['solver'] = solver
     st.session_state['graph'] = graph
     st.session_state['algorithm'] = 'CSP'
@@ -240,7 +270,7 @@ def _run_csp(graph, num_colors, max_assignments, show_animation, live_viz_placeh
     st.session_state['stop_reason'] = stop_reason if 'stop_reason' in locals() else "unknown"
 
 
-def _compare_algorithms(graph, num_colors, initial_temp, min_temp, max_iterations, max_assignments,
+def _compare_algorithms(graph, num_colors, initial_temp, min_temp, max_iterations, max_assignments, cooling_rate,
                        show_animation, animation_speed, live_viz_placeholder, status_placeholder):
     """Compare both SA and CSP algorithms."""
     status_placeholder.info("🔄 Running both algorithms for comparison...")
@@ -249,45 +279,86 @@ def _compare_algorithms(graph, num_colors, initial_temp, min_temp, max_iteration
     
     with col1:
         st.subheader("Simulated Annealing")
-        sa_start = time.time()
-        sa_solver = GraphColoringSA(graph, num_colors)
-        sa_result, sa_temp, sa_conflicts, sa_stop = sa_solver.sim_anneal_simple(
-            len(graph), max_iterations, initial_temp, min_temp
-        )
-        sa_time = time.time() - sa_start
-        sa_conflicts_final = sa_solver.count_conflicts(sa_result)
-        
-        st.metric("Execution Time", f"{sa_time:.3f}s")
-        st.metric("Final Conflicts", sa_conflicts_final)
-        st.metric("Iterations", len(sa_conflicts))
-        st.metric("Stop Reason", "🌡️ Temp" if sa_stop == "temperature_threshold" else "🔄 Max Iter")
+        try:
+            sa_start = time.time()
+            sa_solver = GraphColoringSA(graph, num_colors)
+            result = sa_solver.sim_anneal_simple(
+                len(graph), max_iterations, initial_temp, min_temp, cooling_rate
+            )
+            # Ensure we got 4 values
+            if result is None:
+                raise ValueError("sim_anneal_simple returned None")
+            if not isinstance(result, tuple):
+                raise ValueError(f"sim_anneal_simple returned {type(result)}, expected tuple")
+            if len(result) != 4:
+                raise ValueError(f"Expected 4 values from sim_anneal_simple, got {len(result)}")
+            sa_result, sa_temp, sa_conflicts, sa_stop = result
+            sa_time = time.time() - sa_start
+            sa_conflicts_final = sa_solver.count_conflicts(sa_result) if sa_result else 0
+            
+            st.metric("Execution Time", f"{sa_time:.3f}s")
+            st.metric("Final Conflicts", sa_conflicts_final)
+            st.metric("Iterations", len(sa_conflicts) if sa_conflicts else 0)
+            if sa_stop == "temperature_threshold":
+                st.metric("Stop Reason", "🌡️ Temperature")
+            elif sa_stop == "solution_found":
+                st.metric("Stop Reason", "✅ Solution Found")
+            else:
+                st.metric("Stop Reason", "🔄 Max Iterations")
+        except Exception as e:
+            st.error(f"Error in SA: {e}")
+            import traceback
+            st.code(traceback.format_exc())
+            sa_result = None
+            sa_time = 0
+            sa_conflicts_final = 0
+            sa_stop = "error"
     
     with col2:
         st.subheader("CSP (Backtracking)")
-        csp_start = time.time()
-        csp_solver = GraphColoringCSP(graph, num_colors)
-        csp_result, csp_assignments, csp_backtracks, csp_stop = csp_solver.solve(yield_progress=False, max_assignments=max_assignments)
-        csp_time = time.time() - csp_start
-        
-        if csp_result:
-            csp_conflicts = csp_solver.count_conflicts(csp_result)
-            st.metric("Execution Time", f"{csp_time:.3f}s")
-            st.metric("Final Conflicts", csp_conflicts)
-            st.metric("Assignments", csp_assignments)
-            st.metric("Backtracks", csp_backtracks)
-        else:
-            st.metric("Execution Time", f"{csp_time:.3f}s")
-            st.metric("Solution", "❌ Not Found")
-            st.metric("Assignments", csp_assignments)
-            st.metric("Backtracks", csp_backtracks)
-        
-        # Show stop reason
-        if csp_stop == "solution_found":
-            st.metric("Stop Reason", "✅ Solution Found")
-        elif csp_stop == "max_assignments":
-            st.metric("Stop Reason", "⚠️ Max Assignments")
-        else:
-            st.metric("Stop Reason", "❌ No Solution")
+        try:
+            csp_start = time.time()
+            csp_solver = GraphColoringCSP(graph, num_colors)
+            result = csp_solver.solve(yield_progress=False, max_assignments=max_assignments)
+            # Ensure we got 4 values
+            if result is None:
+                raise ValueError("solve returned None")
+            if not isinstance(result, tuple):
+                raise ValueError(f"solve returned {type(result)}, expected tuple")
+            if len(result) != 4:
+                raise ValueError(f"Expected 4 values from solve, got {len(result)}")
+            csp_result, csp_assignments, csp_backtracks, csp_stop = result
+            csp_time = time.time() - csp_start
+            
+            if csp_result and isinstance(csp_result, dict):
+                csp_conflicts = csp_solver.count_conflicts(csp_result)
+                st.metric("Execution Time", f"{csp_time:.3f}s")
+                st.metric("Final Conflicts", csp_conflicts)
+                st.metric("Assignments", csp_assignments)
+                st.metric("Backtracks", csp_backtracks)
+            else:
+                st.metric("Execution Time", f"{csp_time:.3f}s")
+                st.metric("Solution", "❌ Not Found")
+                st.metric("Assignments", csp_assignments)
+                st.metric("Backtracks", csp_backtracks)
+            
+            # Show stop reason
+            if csp_stop == "solution_found":
+                st.metric("Stop Reason", "✅ Solution Found")
+            elif csp_stop == "max_assignments":
+                st.metric("Stop Reason", "⚠️ Max Assignments")
+            else:
+                st.metric("Stop Reason", "❌ No Solution")
+        except Exception as e:
+            st.error(f"Error in CSP: {e}")
+            import traceback
+            st.code(traceback.format_exc())
+            csp_result = None
+            csp_time = 0
+            csp_conflicts = 0
+            csp_assignments = 0
+            csp_backtracks = 0
+            csp_stop = "error"
     
     # Comparison summary
     st.markdown("---")
@@ -296,7 +367,7 @@ def _compare_algorithms(graph, num_colors, initial_temp, min_temp, max_iteration
     comp_col1, comp_col2, comp_col3 = st.columns(3)
     
     with comp_col1:
-        if csp_result:
+        if sa_result and csp_result:
             if sa_conflicts_final == 0 and csp_conflicts == 0:
                 st.success("✅ Both found optimal solutions!")
             elif sa_conflicts_final < csp_conflicts:
@@ -305,27 +376,36 @@ def _compare_algorithms(graph, num_colors, initial_temp, min_temp, max_iteration
                 st.info("🏆 CSP found better solution")
             else:
                 st.info("🤝 Both found same quality solution")
-        else:
+        elif csp_result:
+            st.warning("⚠️ SA had an error")
+        elif sa_result:
             st.warning("⚠️ CSP found no solution")
+        else:
+            st.error("❌ Both algorithms had errors")
     
     with comp_col2:
-        if sa_time < csp_time:
-            st.info(f"⚡ SA was {csp_time/sa_time:.2f}x faster")
+        if sa_time > 0 and csp_time > 0:
+            if sa_time < csp_time:
+                st.info(f"⚡ SA was {csp_time/sa_time:.2f}x faster")
+            else:
+                st.info(f"⚡ CSP was {sa_time/csp_time:.2f}x faster")
         else:
-            st.info(f"⚡ CSP was {sa_time/csp_time:.2f}x faster")
+            st.warning("⚠️ Cannot compare execution times")
     
     with comp_col3:
-        st.info(f"🎨 Colors used: SA={len(set(sa_result.values()))}, CSP={len(set(csp_result.values())) if csp_result else 'N/A'}")
+        sa_colors = len(set(sa_result.values())) if sa_result and isinstance(sa_result, dict) else 'N/A'
+        csp_colors = len(set(csp_result.values())) if csp_result and isinstance(csp_result, dict) else 'N/A'
+        st.info(f"🎨 Colors used: SA={sa_colors}, CSP={csp_colors}")
     
     # Store both results
-    st.session_state['sa_result'] = sa_result
-    st.session_state['csp_result'] = csp_result
-    st.session_state['sa_solver'] = sa_solver
-    st.session_state['csp_solver'] = csp_solver
+    st.session_state['sa_result'] = sa_result if 'sa_result' in locals() else None
+    st.session_state['csp_result'] = csp_result if 'csp_result' in locals() else None
+    st.session_state['sa_solver'] = sa_solver if 'sa_solver' in locals() else None
+    st.session_state['csp_solver'] = csp_solver if 'csp_solver' in locals() else None
     st.session_state['graph'] = graph
     st.session_state['algorithm'] = 'COMPARE'
-    st.session_state['sa_time'] = sa_time
-    st.session_state['csp_time'] = csp_time
+    st.session_state['sa_time'] = sa_time if 'sa_time' in locals() else 0
+    st.session_state['csp_time'] = csp_time if 'csp_time' in locals() else 0
     
     status_placeholder.success("✅ Comparison completed!")
 
@@ -412,6 +492,8 @@ def main():
     initial_temp = st.sidebar.slider("Initial Temperature", min_value=1.0, max_value=2000.0, value=1000.0, step=10.0)
     min_temp = st.sidebar.slider("Minimum Temperature (Stop Threshold)", min_value=0.1, max_value=10.0, value=2.0, step=0.1,
                                   help="Algorithm stops when temperature reaches this value")
+    cooling_rate = st.sidebar.slider("Cooling Rate", min_value=0.85, max_value=0.99, value=0.95, step=0.01,
+                                      help="Rate at which temperature decreases. Lower values cool faster (0.85-0.99)")
     max_iterations = st.sidebar.slider("Max Iterations", min_value=100, max_value=5000, value=1000, step=100)
     
     # CSP Parameters
@@ -457,12 +539,12 @@ def main():
         if graph and st.button(button_text, type="primary"):
             # Run based on selected algorithm mode
             if algorithm_mode == "Simulated Annealing (SA)":
-                _run_sa(graph, num_colors, initial_temp, min_temp, max_iterations, 
+                _run_sa(graph, num_colors, initial_temp, min_temp, max_iterations, cooling_rate,
                        show_animation, animation_speed, live_viz_placeholder, status_placeholder)
             elif algorithm_mode == "CSP (Backtracking)":
                 _run_csp(graph, num_colors, max_assignments, show_animation, live_viz_placeholder, status_placeholder)
             else:  # Compare Both
-                _compare_algorithms(graph, num_colors, initial_temp, min_temp, max_iterations, max_assignments,
+                _compare_algorithms(graph, num_colors, initial_temp, min_temp, max_iterations, max_assignments, cooling_rate,
                                   show_animation, animation_speed, live_viz_placeholder, status_placeholder)
     
     # Results section
@@ -481,7 +563,7 @@ def main():
             sa_solver = st.session_state['sa_solver']
             graph = st.session_state['graph']
             
-            if sa_result:
+            if sa_result and isinstance(sa_result, dict):
                 sa_conflicts = sa_solver.count_conflicts(sa_result)
                 st.metric("Conflicts", sa_conflicts)
                 st.metric("Execution Time", f"{st.session_state.get('sa_time', 0):.3f}s")
@@ -496,7 +578,7 @@ def main():
             csp_result = st.session_state.get('csp_result')
             csp_solver = st.session_state.get('csp_solver')
             
-            if csp_result and csp_solver:
+            if csp_result and csp_solver and isinstance(csp_result, dict):
                 csp_conflicts = csp_solver.count_conflicts(csp_result)
                 st.metric("Conflicts", csp_conflicts)
                 st.metric("Execution Time", f"{st.session_state.get('csp_time', 0):.3f}s")
@@ -518,8 +600,13 @@ def main():
         solver = st.session_state['solver']
         graph = st.session_state['graph']
         
+        # Ensure best_coloring is a dict
+        if best_coloring and not isinstance(best_coloring, dict):
+            st.error(f"Error: best_coloring is not a dict, it's {type(best_coloring)}")
+            best_coloring = None
+        
         # Calculate final conflicts
-        final_conflicts = solver.count_conflicts(best_coloring)
+        final_conflicts = solver.count_conflicts(best_coloring) if best_coloring else 0
         
         # Display results in columns
         if algorithm == 'SA':
@@ -529,7 +616,7 @@ def main():
                 st.metric("Total Conflicts", final_conflicts)
             
             with col2:
-                unique_colors = len(set(best_coloring.values()))
+                unique_colors = len(set(best_coloring.values())) if best_coloring and isinstance(best_coloring, dict) else 0
                 st.metric("Colors Used", unique_colors)
             
             with col3:
@@ -548,7 +635,7 @@ def main():
                 st.metric("Total Conflicts", final_conflicts)
             
             with col2:
-                unique_colors = len(set(best_coloring.values())) if best_coloring else 0
+                unique_colors = len(set(best_coloring.values())) if best_coloring and isinstance(best_coloring, dict) else 0
                 st.metric("Colors Used", unique_colors)
             
             with col3:
@@ -569,7 +656,7 @@ def main():
                     st.metric("Stop Reason", "❓ Unknown")
         
         # Color assignment table
-        if best_coloring:
+        if best_coloring and isinstance(best_coloring, dict):
             st.subheader("Color Assignment")
             color_data = []
             for vertex in sorted(best_coloring.keys()):
@@ -587,6 +674,8 @@ def main():
             st.subheader("Colored Graph")
             fig_colored = visualize_graph(graph, best_coloring, solver.color_names)
             st.pyplot(fig_colored)
+        elif best_coloring:
+            st.error(f"Error: best_coloring is not a dict, it's {type(best_coloring)}")
         
         # Progress visualization (only for SA)
         if algorithm == 'SA' and show_progress and 'temp_history' in st.session_state:
