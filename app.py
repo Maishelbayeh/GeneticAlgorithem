@@ -299,12 +299,7 @@ def _compare_algorithms(graph, num_colors, initial_temp, min_temp, max_iteration
             st.metric("Execution Time", f"{sa_time:.3f}s")
             st.metric("Final Conflicts", sa_conflicts_final)
             st.metric("Iterations", len(sa_conflicts) if sa_conflicts else 0)
-            if sa_stop == "temperature_threshold":
-                st.metric("Stop Reason", "🌡️ Temperature")
-            elif sa_stop == "solution_found":
-                st.metric("Stop Reason", "✅ Solution Found")
-            else:
-                st.metric("Stop Reason", "🔄 Max Iterations")
+           
         except Exception as e:
             st.error(f"Error in SA: {e}")
             import traceback
@@ -350,13 +345,7 @@ def _compare_algorithms(graph, num_colors, initial_temp, min_temp, max_iteration
                 st.metric("Assignments", csp_assignments)
                 st.metric("Backtracks", csp_backtracks)
             
-            # Show stop reason
-            if csp_stop == "solution_found":
-                st.metric("Stop Reason", "✅ Solution Found")
-            elif csp_stop == "max_assignments":
-                st.metric("Stop Reason", "⚠️ Max Assignments")
-            else:
-                st.metric("Stop Reason", "❌ No Solution")
+            
         except Exception as e:
             st.error(f"Error in CSP: {e}")
             import traceback
